@@ -20,9 +20,6 @@ This program will read in a C++ source file and output the Google Mock
 classes for the specified classes.  If no class is specified, all
 classes in the source file are emitted.
 
-Usage:
-  gmock_class.py header-file.h [ClassName]...
-
 Output is sent to stdout.
 """
 
@@ -32,6 +29,7 @@ __author__ = 'nnorwitz@google.com (Neal Norwitz)'
 import os
 import re
 import sys
+import argparse
 
 from cpp import ast
 from cpp import utils
@@ -43,12 +41,45 @@ except NameError:
   import sets
   set = sets.Set
 
-_VERSION = (1, 0, 1)  # The version of this script.
+_VERSION = (1, 1, 0)  # The version of this script.
 # How many spaces to indent.  Can set me with the INDENT environment variable.
 _INDENT = 2
 
 
-def _GenerateMethods(output_lines, source, class_node):
+def _CompatibleNamespace(derived, parent):
+  """
+
+  Args:
+    derived: The Class node for the child class.
+    parent: The Type node for a base class, from the child class's node.bases.
+
+  Returns:
+    True if  there is no conflict in the namespaces to the extent that the parent specifies one,
+    they are compatible. This is not a very strict check, but for many programs it will work.
+
+  """
+  return cmp(derived.namespace[0:len(parent.namespace)], parent.namespace) == 0
+
+
+def _BaseClass(class_node, base_type, ast_list):
+  """
+
+  Args:
+    class_node: The Class node to examine.
+    parent: The Type node for a base class, from the child class's node.bases.
+    ast_list: The AST for the entire file.
+
+  Returns:
+    The Class node for the base class, if any.
+
+  """
+  for node in ast_list:
+    if isinstance(node, ast.Class) and node.body and node.name == base_type.name and _CompatibleNamespace(class_node, node):
+      return node
+  return None
+
+
+def _GenerateMethods(output_lines, source, class_node, ast_list, seen, do_bases):
   function_type = (ast.FUNCTION_VIRTUAL | ast.FUNCTION_PURE_VIRTUAL |
                    ast.FUNCTION_OVERRIDE)
   ctor_or_dtor = ast.FUNCTION_CTOR | ast.FUNCTION_DTOR
@@ -119,11 +150,26 @@ def _GenerateMethods(output_lines, source, class_node):
           args = re.sub('  +', ' ', args_strings.replace('\n', ' '))
 
       # Create the mock method definition.
-      output_lines.extend(['%s%s(%s,' % (indent, mock_method_macro, node.name),
-                           '%s%s(%s));' % (indent*3, return_type, args)])
+      decl = '%s%s(%s,' % (indent, mock_method_macro, node.name)
+      args = '%s%s(%s));' % (indent * 3, return_type, args)
+      # Do not re-generate a mock for something we've printed before.
+      if not seen.has_key(decl+args):
+        output_lines.extend([decl, args])
+        seen[decl+args] = True
+
+  try:
+    if do_bases:
+      # Generate mocks for inherited functions.
+      for base_type in class_node.bases:
+        base_class = _BaseClass(class_node, base_type, ast_list)
+        if base_class:
+          output_lines.extend(["%s// Inherited from %s" % (indent, base_class.FullName())])
+          _GenerateMethods(output_lines, source, base_class, ast_list, seen, do_bases)
+  except:
+    pass
 
 
-def _GenerateMocks(filename, source, ast_list, desired_class_names):
+def _GenerateMocks(filename, source, ast_list, desired_class_names, do_bases=True):
   processed_class_names = set()
   lines = []
   for node in ast_list:
@@ -157,7 +203,7 @@ def _GenerateMocks(filename, source, ast_list, desired_class_names):
       lines.append('%spublic:' % (' ' * (_INDENT // 2)))
 
       # Add all the methods.
-      _GenerateMethods(lines, source, class_node)
+      _GenerateMethods(lines, source, class_node, ast_list, {}, do_bases)
 
       # Close the class.
       if lines:
@@ -188,10 +234,15 @@ def _GenerateMocks(filename, source, ast_list, desired_class_names):
 
 
 def main(argv=sys.argv):
-  if len(argv) < 2:
+  parser = argparse.ArgumentParser(description="Simple generator for gmock functions", epilog=__doc__)
+  parser.add_argument('--bases', dest='bases', action='store_true', help='include functions from base classes')
+  parser.add_argument('header', nargs='?', help='header file', default='')
+  parser.add_argument('classes', metavar='class_name', nargs='*', help='generate mocks for only these classes')
+  args = parser.parse_args()
+  if not args.header:
     sys.stderr.write('Google Mock Class Generator v%s\n\n' %
                      '.'.join(map(str, _VERSION)))
-    sys.stderr.write(__doc__)
+    parser.print_help()
     return 1
 
   global _INDENT
@@ -202,10 +253,9 @@ def main(argv=sys.argv):
   except:
     sys.stderr.write('Unable to use indent of %s\n' % os.environ.get('INDENT'))
 
-  filename = argv[1]
-  desired_class_names = None  # None means all classes in the source file.
-  if len(argv) >= 3:
-    desired_class_names = set(argv[2:])
+  filename = args.header
+  desired_class_names = set(args.classes) # None means all classes in the source file.
+  do_bases = args.bases
   source = utils.ReadFile(filename)
   if source is None:
     return 1
@@ -219,7 +269,7 @@ def main(argv=sys.argv):
     # An error message was already printed since we couldn't parse.
     sys.exit(1)
   else:
-    lines = _GenerateMocks(filename, source, entire_ast, desired_class_names)
+    lines = _GenerateMocks(filename, source, entire_ast, desired_class_names, do_bases)
     sys.stdout.write('\n'.join(lines))
 
 

@@ -51,7 +51,7 @@ class GenerateMethodsTest(TestCase):
     # <test> is a pseudo-filename, it is not read or written.
     builder = ast.BuilderFromSource(cpp_source, '<test>')
     ast_list = list(builder.Generate())
-    gmock_class._GenerateMethods(method_source_lines, cpp_source, ast_list[0])
+    gmock_class._GenerateMethods(method_source_lines, cpp_source, ast_list[0], ast_list, {}, True)
     return '\n'.join(method_source_lines)
 
   def testSimpleMethod(self):
@@ -314,13 +314,13 @@ class Foo {
 
 class GenerateMocksTest(TestCase):
 
-  def GenerateMocks(self, cpp_source):
+  def GenerateMocks(self, cpp_source, do_base=True):
     """Convert C++ source to complete Google Mock output source."""
     # <test> is a pseudo-filename, it is not read or written.
     filename = '<test>'
     builder = ast.BuilderFromSource(cpp_source, filename)
     ast_list = list(builder.Generate())
-    lines = gmock_class._GenerateMocks(filename, cpp_source, ast_list, None)
+    lines = gmock_class._GenerateMocks(filename, cpp_source, ast_list, None, do_base)
     return '\n'.join(lines)
 
   def testNamespaces(self):
@@ -443,6 +443,60 @@ void(const FooType& test_arg));
 """
     self.assertEqualIgnoreLeadingWhitespace(
         expected, self.GenerateMocks(source))
+
+  def testInherited(self):
+    source = """\
+class Base {
+ public:
+  virtual void f1(int i);
+};
+
+class Derived : public Base {
+ public:
+  virtual void f2(float f);
+};
+"""
+    expected = """\
+class MockBase : public Base {
+public:
+MOCK_METHOD1(f1,\nvoid(int i));
+};
+
+class MockDerived : public Derived {
+public:
+MOCK_METHOD1(f2,\nvoid(float f));
+// Inherited from Base
+MOCK_METHOD1(f1,\nvoid(int i));
+};
+"""
+    self.assertEqualIgnoreLeadingWhitespace(
+      expected, self.GenerateMocks(source))
+
+  def testInheritedNoBases(self):
+    source = """\
+class Base {
+ public:
+  virtual void f1(int i);
+};
+
+class Derived : public Base {
+ public:
+  virtual void f2(float f);
+};
+"""
+    expected = """\
+class MockBase : public Base {
+public:
+MOCK_METHOD1(f1,\nvoid(int i));
+};
+
+class MockDerived : public Derived {
+public:
+MOCK_METHOD1(f2,\nvoid(float f));
+};
+"""
+    self.assertEqualIgnoreLeadingWhitespace(
+      expected, self.GenerateMocks(source, False))
 
 if __name__ == '__main__':
   unittest.main()
